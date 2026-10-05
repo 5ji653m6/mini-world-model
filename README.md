@@ -57,7 +57,7 @@ Atlas 的参数量、数据和训练细节都没有公开，计算量也远超�
 点光源和阴影。每一帧的 RGB、深度和相机位姿都是**精确已知**的，所以不需要下载任何数据集，训练时边渲染边学；
 而且因为有真值，模型的每一个改进都可以**定量地**衡量。
 
-<p align="center"><img src="assets/autoencoder_recon.png" width="300"><br>
+<p align="center"><img src="assets/autoencoder_recon.png" width="420"><br>
 <sub>程序化生成的房间（每行：原图 | 自编码器重建 | 原深度 | 重建深度）</sub></p>
 
 ---
@@ -65,7 +65,7 @@ Atlas 的参数量、数据和训练细节都没有公开，计算量也远超�
 ## 方法
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph Memory["空间记忆"]
         M["已观察 / 已生成的帧<br/>(RGB + 深度 + 相机位姿)"]
     end
