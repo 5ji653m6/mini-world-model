@@ -164,7 +164,7 @@ command is at the top of `train.py`. To re-record the demo: `python make_demo.py
 - 128×128 and ~0.35 s per step is far from smooth real-time. Consistency distillation down to ~4 sampling steps
   would be the next thing I'd try.
 - The cache is plain point splatting; 3D Gaussians would give cleaner reprojection and better 3D export.
-- Evaluation uses only 6 rooms and the numbers are noisy; read the table as a trend.
+- Evaluation uses only 6 rooms and the numbers are noisy; read the plots as trends.
 
 ## References
 
