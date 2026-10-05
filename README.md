@@ -1,11 +1,21 @@
 # mini-world-model
 
-**一个能在笔记本 GPU 上从零训练的迷你空间世界模型。** 给它一张（或几张）没见过的房间照片，它就能让你在房间里自由走动、
-转头，实时生成每一个新视角的画面和深度，并把看到的一切融合成一个 3D 点云世界。
+**一个能在笔记本 GPU 上从零训练的迷你空间世界模型。** 给它一张（或几张）没见过的房间照片，就可以在房间里走动、
+转头，模型逐步生成每一个新视角的画面和深度，并把看到的内容融合成一个 3D 点云世界。
 
 > A from-scratch, laptop-scale spatial world model inspired by World Labs' *Atlas*: a camera-conditioned
 > autoregressive latent-diffusion transformer with spatial memory and an explicit 3D cache.
 > Trained in ~5 GPU-hours on an RTX 4060 Laptop (8 GB). Unofficial; not affiliated with World Labs.
+
+> [!IMPORTANT]
+> **本项目仅用于思路整理和架构研究，不保证生成效果。**
+> 受限于设备（单块 8GB 显存的笔记本 GPU）、数据（只有程序化合成的简单房间）和训练时间（总计约 5 GPU 小时），
+> 模型规模和训练量都比真正的世界模型小几个数量级。生成画面分辨率低、没见过的区域经常出现色块和物体变形、
+> 无法处理真实照片——它不是一个可用的生成工具。它的价值在于把 Atlas 式空间世界模型的关键设计完整地走通一遍，
+> 并用可量化的实验验证每个设计的作用。详见 [局限与说明](#局限与说明)。
+>
+> *This is a research / learning project for organizing ideas and studying the architecture. Due to hardware,
+> data and compute limits, generation quality is not guaranteed and the model is not meant for practical use.*
 
 ![demo](assets/demo.gif)
 
@@ -23,7 +33,7 @@
 - [快速开始](#快速开始)
 - [从零训练](#从零训练)
 - [代码结构](#代码结构)
-- [局限与下一步](#局限与下一步)
+- [局限与说明](#局限与说明)
 - [参考](#参考)
 
 ---
@@ -255,7 +265,13 @@ viewer.html       浏览器点云查看器（three.js）
 
 ---
 
-## 局限与下一步
+## 局限与说明
+
+**直说：这个项目的定位是思路整理和架构研究，不是一个能用的生成模型，也不保证任何生成效果。**
+
+真正的世界模型（包括 Atlas）是在海量真实数据上、用大规模集群训练出来的；而这里的一切都受限于一台笔记本：
+单块 RTX 4060 Laptop（8GB 显存）、只有程序化生成的简单合成房间、总共约 5 GPU 小时的训练。在这个规模下，
+模型能学到的东西非常有限，下面这些问题在演示里都看得到，也都是预期之内的：
 
 - **只在合成房间上训练**，不能处理真实照片。迈向真实场景需要带位姿的真实视频（RealEstate10K、DL3DV）、
   更强的预训练 VAE，以及大一到两个数量级的算力。
@@ -263,6 +279,11 @@ viewer.html       浏览器点云查看器（three.js）
   物体边缘偏软、有"融化"感。改进方向是提升第一次想象的质量：更大的模型、更长的训练、对未覆盖区域加大 CFG。
 - **分辨率 128×128，每步约 0.35 秒。** 可以用一致性蒸馏把采样从 20 步降到 4 步左右，接近流畅实时。
 - 3D 缓存目前是简单的点云溅射；换成 3D 高斯表示可以得到更干净的重投影和更好的 3D 导出。
+- 评测只在 6 个随机房间上做，数字的波动不小，结论应当看作"方向性"的，而不是严格的基准结果。
+
+所以，这个仓库更适合用来：理解空间世界模型由哪些部件组成、它们各自解决什么问题；作为在小算力下做实验的起点；
+以及参考一些具体的工程做法（相机条件、空间记忆检索、3D 缓存、在线合成数据）。如果你需要的是高质量的生成效果，
+这个项目无法提供。
 
 ---
 
