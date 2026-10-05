@@ -4,7 +4,8 @@ Each session starts from one photo of an unseen room (or from nothing in imagine
 looks around, walks, turns back, walks back to the start and looks around again, so the
 video shows both novel-view generation and whether the world stays consistent.
 
-    python make_demo.py --out assets/demo.mp4 --gif assets/demo.gif
+    python make_demo.py --lang en --out assets/demo_en.mp4 --gif assets/demo_en.gif
+    python make_demo.py --lang zh --out assets/demo.mp4 --gif assets/demo.gif
 """
 import argparse
 import math
@@ -22,6 +23,21 @@ from miniatlas.world import memory_cache
 
 W, H, TOP = 768, 384, 40
 BIG, SMALL = 384, 192
+
+TEXT = {
+    "zh": dict(gt="真实画面（模型看不到）", no_gt="想象模式：没有真实房间", cache="3D 缓存：已知内容",
+               depth="生成的深度", gen="生成画面", start="起点", start_imagine="从零想象",
+               spin="D  原地环顾一圈", walk="W  向前走", blocked="A  遇到障碍，左转", right="D  右转",
+               turn_back="D  转身", walk_back="W  原路走回起点", spin_again="D  回到起点再环顾：检验一致性",
+               done="完成", title_photo="场景 {k} · 一张照片 → 探索陌生房间", title_imagine="场景 {k} · 不给照片，凭空想象"),
+    "en": dict(gt="ground truth (not seen)", no_gt="imagine mode: no room", cache="3D cache: what is known",
+               depth="generated depth", gen="generated view", start="start", start_imagine="imagining from nothing",
+               spin="D  look around", walk="W  walk forward", blocked="A  blocked, turn left", right="D  turn right",
+               turn_back="D  turn back", walk_back="W  walk back to the start", spin_again="D  back at start: same room?",
+               done="done", title_photo="Scene {k} · one photo, unseen room",
+               title_imagine="Scene {k} · no photo, imagined room"),
+}
+T = TEXT["zh"]
 
 
 def surf(x, size):
@@ -43,9 +59,9 @@ class Recorder:
             s.blit(t, (W - t.get_width() - 10, 8))
         s.blit(surf(app.cur[:3], BIG), (0, TOP))
         gt = None if app.args.imagine else surf(app.gt[:3], SMALL)
-        panels = [((BIG, TOP), gt, "真实画面（模型看不到）", "想象模式：没有真实房间"),
-                  ((BIG, TOP + SMALL), None if cache is None else surf(cache[0, :3], SMALL), "3D 缓存：已知内容", ""),
-                  ((BIG + SMALL, TOP + SMALL), surf(app.cur[3:], SMALL), "生成的深度", "")]
+        panels = [((BIG, TOP), gt, T["gt"], T["no_gt"]),
+                  ((BIG, TOP + SMALL), None if cache is None else surf(cache[0, :3], SMALL), T["cache"], ""),
+                  ((BIG + SMALL, TOP + SMALL), surf(app.cur[3:], SMALL), T["depth"], "")]
         for (x, y), img, label, empty in panels:
             if img is None:
                 pygame.draw.rect(s, (40, 40, 46), (x, y, SMALL, SMALL))
@@ -56,7 +72,7 @@ class Recorder:
         m = pygame.Surface((explore.SIDE, explore.SIDE))
         app.draw_map(m, 0, 0)
         s.blit(pygame.transform.smoothscale(m, (SMALL, SMALL)), (BIG + SMALL, TOP))
-        s.blit(small.render("生成画面", True, (255, 255, 255), (0, 0, 0)), (6, TOP + 6))
+        s.blit(small.render(T["gen"], True, (255, 255, 255), (0, 0, 0)), (6, TOP + 6))
         a = pygame.surfarray.array3d(s).transpose(1, 0, 2)
         self.frames += [a] * hold
 
@@ -85,30 +101,30 @@ def run_session(rec, title):
         rec.frame(title, label, cache)
         return True
 
-    rec.frame(title, "起点" if not app.args.imagine else "从零想象", None, hold=6)
+    rec.frame(title, T["start"] if not app.args.imagine else T["start_imagine"], None, hold=6)
     for _ in range(24):
-        act(turn=1, label="D  原地环顾一圈")
+        act(turn=1, label=T["spin"])
     path = [(app.pos.clone(), app.yaw)]
     for i in range(16):
-        if not act(fwd=1, label="W  向前走"):
+        if not act(fwd=1, label=T["walk"]):
             for _ in range(3):
-                act(turn=-1, label="A  遇到障碍，左转")
+                act(turn=-1, label=T["blocked"])
             continue
         path.append((app.pos.clone(), app.yaw))
         if i == 7:
             for _ in range(3):
-                act(turn=1, label="D  右转")
+                act(turn=1, label=T["right"])
             path.append((app.pos.clone(), app.yaw))
     for _ in range(12):
-        act(turn=1, label="D  转身")
+        act(turn=1, label=T["turn_back"])
     for p, y in reversed(path[:-1]):          # retrace the path back to the start
         app.pos, app.yaw = p.clone(), y + math.pi
         cache = memory_cache(app.model, app.mem, app.c2w())
         app.step()
-        rec.frame(title, "W  原路走回起点", cache)
+        rec.frame(title, T["walk_back"], cache)
     for _ in range(24):
-        act(turn=1, label="D  回到起点再环顾：检验一致性")
-    rec.frame(title, "完成", None, hold=10)
+        act(turn=1, label=T["spin_again"])
+    rec.frame(title, T["done"], None, hold=10)
 
 
 def main():
@@ -119,7 +135,10 @@ def main():
     ap.add_argument("--steps", type=int, default=20)
     ap.add_argument("--out", default="assets/demo.mp4")
     ap.add_argument("--gif", default="assets/demo.gif")
+    ap.add_argument("--lang", choices=["zh", "en"], default="zh")
     args = ap.parse_args()
+    global T
+    T = TEXT[args.lang]
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
 
     pygame.init()
@@ -133,10 +152,10 @@ def main():
         app.font = fonts[1]
         rec = Recorder(app, fonts)
         if imagine:
-            title = f"场景 {k + 1} · 不给照片，凭空想象"
+            title = T["title_imagine"].format(k=k + 1)
             rec.card([title, "No photo at all - the model imagines a room and keeps it consistent"])
         else:
-            title = f"场景 {k + 1} · 一张照片 → 探索陌生房间"
+            title = T["title_photo"].format(k=k + 1)
             rec.card([title, "One photo of an unseen room -> explore it; memory + 3D cache keep it consistent"])
         run_session(rec, title)
         frames += rec.frames

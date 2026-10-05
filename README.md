@@ -1,171 +1,33 @@
 # mini-world-model
 
-**一个能在笔记本 GPU 上从零训练的迷你空间世界模型。** 给它一张（或几张）没见过的房间照片，就可以在房间里走动、
-转头，模型逐步生成每一个新视角的画面和深度，并把看到的内容融合成一个 3D 点云世界。
+**English** | [中文](README.zh-CN.md)
 
-> A from-scratch, laptop-scale spatial world model inspired by World Labs' *Atlas*: a camera-conditioned
-> autoregressive latent-diffusion transformer with spatial memory and an explicit 3D cache.
-> Trained in ~5 GPU-hours on an RTX 4060 Laptop (8 GB). Unofficial; not affiliated with World Labs.
+A small spatial world model I built from scratch and trained on a laptop, to understand how models like
+World Labs' [Atlas](https://www.worldlabs.ai/blog/atlas) work.
+
+**posed RGB-D views → Plücker camera rays → multi-view Transformer → rectified flow in latent space →
+autoregressive novel views → spatial memory + 3D cache → fused point cloud**
+
+Give it one photo of a room it has never seen, then walk around with WASD: every step it generates the new view
+(RGB + depth), writes it back into memory, and the explored room slowly turns into a 3D point cloud.
+
+![demo](assets/demo_en.gif)
+
+Full demo video (68 s, 3 scenes): [assets/demo_en.mp4](assets/demo_en.mp4). In each frame the big panel is the
+generated view; on the right are the ground truth (never shown to the model), the 3D cache (what the model already
+knows about this view), the generated depth, and a top-down map of the fused points.
 
 > [!NOTE]
-> 这是我用来梳理思路、研究架构的个人项目。手头只有一台笔记本（RTX 4060，8GB 显存），所以数据用的是自己写渲染器生成的
-> 简单合成房间，训练加起来也就 5 个 GPU 小时左右，和真正的世界模型差了好几个数量级。生成效果比较一般：分辨率只有
-> 128×128，没见过的地方经常糊成色块，物体也会变形，真实照片目前处理不了。效果这块我没法保证，做这个更多是想把
-> Atlas 这类模型的几个关键设计自己从头实现一遍，看看它们各自到底起了多大作用。
+> This is a personal project for working through ideas and studying the architecture. It is independent and not
+> affiliated with World Labs. Atlas has no public paper or code, so the design here follows common practice in the
+> field and is my best guess, not their implementation.
 >
-> *A personal project for working through ideas and studying the architecture. Built and trained on a single
-> laptop GPU, so output quality is limited and not guaranteed.*
+> Everything was done on one laptop (RTX 4060, 8 GB VRAM): the data is simple procedurally generated rooms and the
+> whole training budget is about 5 GPU-hours. At this scale the results are limited — 128×128, unseen areas often
+> turn into blobs, objects deform, and real photos are out of reach. I can't promise anything about output quality;
+> the point was to implement the key ideas end to end and measure what each one actually contributes.
 
-![demo](assets/demo.gif)
-
-🎬 **完整演示视频（68 秒，3 个场景）：[assets/demo.mp4](assets/demo.mp4)**
-— 每帧左边是模型生成的画面；右边依次是真实画面（模型看不到，仅供对比）、3D 缓存（模型"已经知道"的内容）、
-生成的深度、以及由生成结果融合出的俯视地图。
-
----
-
-## 目录
-
-- [项目思路](#项目思路)
-- [方法](#方法)
-- [迭代过程与结果](#迭代过程与结果)
-- [快速开始](#快速开始)
-- [从零训练](#从零训练)
-- [代码结构](#代码结构)
-- [局限](#局限)
-- [参考](#参考)
-
----
-
-## 项目思路
-
-### 什么是"世界模型"
-
-世界模型是一个能**预测世界在某个动作之后会变成什么样**的生成模型。对游戏世界模型（DIAMOND、Genie、GameNGen）来说，
-动作是按键，预测的是下一帧；对*空间*世界模型来说，动作就是**相机运动**——"往前走一步、向左转 15° 之后，我会看到什么？"
-把这个预测一步步滚动下去，模型就成了一个可以自由探索的模拟器。
-
-### Atlas 做对了什么
-
-2026 年 9 月，World Labs 发布了 Atlas。从公开信息看，它有几个关键设计：
-
-1. **自回归扩散 Transformer**：像 LLM 一样一段段地生成，每一段内部用扩散（rectified flow）去噪，且在潜空间里进行。
-2. **相机位姿是一等公民**：上下文里的每张图像和深度图都绑定一个**显式的 3D 相机位姿**。相机控制是几何输入，
-   而不是"向左平移"之类的文字。
-3. **空间上下文**：上下文按 3D 空间组织，而不是按时间顺序——回到一个地方时，模型参考的是之前在这里看到的东西。
-4. **原生 3D 输出**：除了图像还输出深度，可以重建成点云 / 3D 高斯。
-
-Atlas 的参数量、数据和训练细节都没有公开，计算量也远超个人能力。所以这个项目的目标不是"复制 Atlas"，而是：
-
-> **在一台笔记本上，用最小的规模把这四个设计全部跑通，并亲手验证每个设计到底起什么作用。**
-
-### 为什么用合成数据
-
-真实的带位姿视频数据（RealEstate10K、DL3DV）需要大量预处理，笔记本的算力也撑不起在真实数据上训练。
-于是我写了一个 **GPU 光线投射渲染器**，实时生成无限多的随机房间：带花纹的墙面和地板、挂画、地毯、各种方块和球体、
-点光源和阴影。每一帧的 RGB、深度和相机位姿都是**精确已知**的，所以不需要下载任何数据集，训练时边渲染边学；
-而且因为有真值，模型的每一个改进都可以**定量地**衡量。
-
-<p align="center"><img src="assets/autoencoder_recon.png" width="420"><br>
-<sub>程序化生成的房间（每行：原图 | 自编码器重建 | 原深度 | 重建深度）</sub></p>
-
----
-
-## 方法
-
-<p align="center"><img src="assets/pipeline.svg" width="900" alt="方法流程图"></p>
-
-### 1. 数据：程序化房间 + GPU 光线投射（`miniatlas/scene.py`）
-
-每个场景是一个随机尺寸的房间，墙 / 地 / 顶有纯色、条纹或棋盘格图案，墙上有画、地上有地毯，房间里有 2~8 个随机的
-球体和（绕竖直轴旋转的）方块。渲染器对所有物体做解析求交，带点光源硬阴影和 2× 超采样抗锯齿，用 `torch.compile`
-融合后每秒能渲染约 2000 张 128×128 的视图——比训练消耗得还快，所以数据完全在线生成。
-
-训练样本 = 一个目标视角 + 0~4 个上下文视角。上下文有的离目标很近（模拟一步步走动），有的在房间任意位置
-（模拟稀疏视角重建）；8% 的样本没有任何上下文，模型由此学会"凭空想象"一个房间。
-
-### 2. 潜空间：卷积自编码器（`miniatlas/autoencoder.py`）
-
-和 Atlas / Stable Diffusion 一样，先把每张 128×128 的 RGB + 深度压缩成 32×32×8 的潜变量（重建 PSNR ≈ 34 dB），
-扩散模型只在潜空间里工作。这样 128px 模型的 token 数和 64px 像素空间模型一样，算力几乎不变。
-训练自编码器时在潜变量上加噪声，让解码器能容忍扩散模型生成的不完美潜变量。
-
-### 3. 相机条件：Plücker 射线 + 重力对齐坐标系（`miniatlas/camera.py`）
-
-每个像素的相机射线用 Plücker 坐标 `(d, o × d)` 表示（CAT3D 等多视角扩散模型的标准做法），作为 6 个额外通道和图像
-拼在一起。所有射线都表达在**目标相机的重力对齐参考系**里：原点在目标相机正下方的地面，z 轴指向它的朝向，y 轴朝上。
-这让模型对整体的水平平移和转向不变，但保留了高度和俯仰——地面永远在 y = 0。
-
-### 4. 模型：多视角扩散 Transformer（`miniatlas/model.py`）
-
-- 所有视图（目标 + 上下文）放进**同一个序列做全注意力**，没有帧序号嵌入——上下文是一个**无序集合**，位置信息只来自
-  几何。这就是 "spatial context"：任何时间、任何顺序拍到的视图都能作为上下文。
-- 目标视图用细 patch（256 个 token），上下文用粗 patch（每张 64 个 token），5 张视图的序列只有 512 个 token。
-- adaLN-Zero 时间条件、QK-norm；**rectified flow** 训练（logit-normal 时间步），20~25 步 Euler 采样，CFG 1.5。
-- **上下文噪声增强**（类似 Diffusion Forcing / GameNGen）：训练时给上下文加随机噪声并告诉模型噪声等级；
-  推理时给模型自己生成的帧标上一个小噪声等级，让它不要盲目相信自己的输出。
-
-### 5. 空间记忆（`miniatlas/world.py`）
-
-每张观察到的或生成的视图连同位姿存进记忆。生成新视角前，把每帧的深度反投影成一组探针点、投影到新相机里，按
-**视锥重叠程度**挑出覆盖最好的 4 帧作为上下文（去掉几乎重复的视角，真实照片优先）。上下文是按"空间"而不是按"最近"
-选的，所以回到旧地方时会参考当时看到的东西。
-
-### 6. 显式 3D 缓存（`miniatlas/cache.py`）——最关键的改进
-
-只靠几张 2D 上下文图，模型每一步都要"凭印象"把整个画面重画一遍，细节会一点点漂移：物体变形、消失，花纹变成色块。
-解决办法是把记忆**真正地变成 3D**：
-
-1. 把所有真实照片和最相关的 12 帧生成帧，按深度反投影成 3D 点；
-2. 用 z-buffer 把这些点溅射（splat）到新相机里，得到一张"已知部分"的图：RGB + 深度 + 覆盖掩码，没见过的地方是空洞；
-3. 把这张图作为目标 token 的额外输入（零初始化的线性层，从已训练的模型微调）。
-
-于是看过的内容按几何**直接搬过来**，模型只需要补洞、修补溅射的瑕疵。训练时额外渲染 4 个"历史视角"进缓存，
-并对缓存的来源加位姿、深度和模糊扰动，模拟生成帧的不完美。思路与 GEN3C 的 3D cache 相同。
-
-<p align="center"><img src="assets/training_preview.png" width="760"><br>
-<sub>训练预览。每行：4 个上下文视图（灰 = 无）| 3D 缓存 | 真实目标 | 生成结果 | 真实深度 | 生成深度。
-第一行没有任何上下文，模型完全靠想象；有缓存的行，生成结果几乎与真值一致，空洞被合理补全。</sub></p>
-
----
-
-## 迭代过程与结果
-
-评测方式（`rollout.py`）：给模型 1 或 3 张没见过房间的照片，沿固定轨迹自回归生成 103 帧——
-**原地转一圈（24 帧）→ 往前走 40 步 → 原路返回（39 帧）**——逐帧与真实渲染比较 PSNR。
-"返回"阶段最能说明问题：此时模型已经生成了几十帧，误差是否累积、世界是否还保持原样，都会体现在这里。
-以下数字是 6 个随机房间的平均（dB，越高越好）。
-
-| 版本 | 思路 | 1 张照片（转圈 / 行走 / 返回） | 3 张照片（转圈 / 行走 / 返回） | 训练时间 |
-|---|---|---|---|---|
-| v1 像素空间 64px | 基线 | 未在同一组房间上评测 | 未在同一组房间上评测 | 1.5 h |
-| v2 潜空间 128px | 自编码器 + 潜空间扩散 | 15.6 / 16.2 / 13.8 | 16.8 / 17.4 / 14.9 | 0.5 h + 2.3 h |
-| v3 + self-forcing | 用自己的输出做上下文训练 | 15.0 / 15.6 / 13.4 | 17.1 / 17.5 / 14.6 | +1 h |
-| **v4 + 3D 缓存** | **记忆重投影为几何条件** | 15.5 / 16.0 / **15.2** | **18.1 / 18.8 / 17.2** | +1 h |
-
-**v1 → v2：分辨率。** 64×64 像素空间的结果太模糊，而直接在 128px 像素空间训练算力要翻 4 倍。改用潜空间后
-token 数不变，画面锐利了很多（棋盘格、条纹、画框边缘都清晰可辨）。
-
-**v2 → v3：self-forcing（失败的尝试）。** 长距离漫游的漂移，一个常见解释是"训练时只见过干净的上下文，推理时却要吃
-自己生成的、有误差的帧"。于是我在训练时把部分上下文换成模型自己的重建（SDEdit 式部分加噪再去噪、两轮叠加误差），
-并加上"这帧是生成的"标记。结果 PSNR 基本持平，漂移没有明显改善
-（[对比图](assets/selfforce_comparison.png)）。
-**结论：问题不在于"模型不习惯吃自己的输出"，而在于它只能通过几张 2D 图间接地记住 3D 世界，每一步都在重新想象。**
-
-**v2 → v4：3D 缓存（成功）。** 基于上面的结论，把记忆显式地变成 3D 几何。"返回"阶段 PSNR 提升
-1.4 dB（1 张照片）和 2.3 dB（3 张照片），中途乱冒的色块大多变回了正确的墙面和物体：
-
-<p align="center"><img src="assets/cache_comparison.png" width="900"><br>
-<sub>奇数行：v2；偶数行：v4（3D 缓存）。每对图：真实 | 生成，取轨迹的第 30 / 50 / 70 / 90 / 102 帧。</sub></p>
-
-> 关于数字：PSNR 衡量的是与真值的接近程度。只给 1 张照片时，房间大部分区域模型从没见过，它会想象出**合理但不同**
-> 的内容（比如把一个方块想象成一幅画），这在 PSNR 上会被算作"错误"。所以 1 张照片的数字天然偏低，提升也更小。
-
----
-
-## 快速开始
-
-需要 NVIDIA GPU（在 RTX 4060 Laptop 8GB、Windows 11 上开发）和 Python 3.10+。
+## Quick start
 
 ```bash
 git clone https://github.com/lyk555/mini-world-model.git
@@ -175,114 +37,178 @@ python -m venv .venv
 .venv/Scripts/python -m pip install -r requirements.txt
 ```
 
-（Linux / macOS 把 `.venv/Scripts/python` 换成 `.venv/bin/python`。）
+(On Linux / macOS use `.venv/bin/python`.) Needs an NVIDIA GPU.
 
-**下载预训练权重**（约 70 MB，包含世界模型和自编码器）：从
-[Releases](https://github.com/lyk555/mini-world-model/releases) 下载 `mini-world-model-128-cache.pt`，
-放到 `runs/latent128_cache/ema.pt`。
-
-### 交互式漫游
+Download `mini-world-model-128-cache.pt` (~70 MB, world model + autoencoder) from
+[Releases](https://github.com/lyk555/mini-world-model/releases) and put it at `runs/latent128_cache/ema.pt`. Then:
 
 ```bash
-.venv/Scripts/python explore.py              # 从一张照片出发，探索一个没见过的房间
-.venv/Scripts/python explore.py --imagine    # 不给照片，让模型凭空想象一个房间
+.venv/Scripts/python explore.py              # start from one photo of an unseen room
+.venv/Scripts/python explore.py --imagine    # no photo at all, the model imagines the room
 ```
 
-| 按键 | 作用 |
-|---|---|
-| W / ↑ 、 S / ↓ | 前进 / 后退 0.3 m |
-| A / ← 、 D / → | 左转 / 右转 15° |
-| Q / E | 左 / 右平移 |
-| R / F | 抬头 / 低头 |
-| G | 显示 / 隐藏真实画面（模型看不到，仅供对比） |
-| N | 换一个新房间 |
-| P | 把当前融合的 3D 点云保存为 `.ply` |
+Keys: **W/S** or **↑/↓** move · **A/D** or **←/→** turn 15° · **Q/E** strafe · **R/F** look up/down ·
+**G** toggle ground truth · **N** new room · **P** save the point cloud as `.ply` · **Esc** quit
 
-在 RTX 4060 Laptop 上每步约 0.35 秒。推荐玩法：先原地转一圈，再走开，最后走回原处，看房间是否还是原来的样子。
-（如果按键没反应：先点一下窗口；用中文输入法时可以切到英文或用方向键。）
-
-### 离线评测与 3D 重建
+Each step takes about 0.35 s on my laptop. Try looking around once, walking away, then coming back — the room
+should still look the way you left it.
 
 ```bash
-.venv/Scripts/python rollout.py --seed 7 --inputs 3
+.venv/Scripts/python rollout.py --seed 7 --inputs 3   # offline rollout vs ground truth, GIF + .ply + PSNR
 ```
 
-输出到 `outputs/rollout_seed7_in3/`：逐帧对比的 `rollout.gif`、模型生成的 3D 世界 `generated.ply`、
-真实的 `groundtruth.ply`，以及各阶段的 PSNR。用浏览器打开 [`viewer.html`](viewer.html)，把两个 `.ply` 拖进去即可并排对比。
+Open [`viewer.html`](viewer.html) in a browser and drop the two `.ply` files in to compare the generated 3D world with
+the real one.
 
-### 重新录制演示视频
+## How it works
+
+<p align="center"><img src="assets/pipeline_en.svg" width="900" alt="pipeline"></p>
+
+**1. Data: random rooms rendered on the GPU** (`miniatlas/scene.py`). Each sample is a room with random size,
+patterned walls/floor (stripes, checkers, paintings, rugs), 2–8 boxes and spheres, and a point light with shadows.
+Everything is ray-cast analytically in PyTorch, so RGB, depth and camera poses are exact. With `torch.compile` it
+renders ~2000 views/s at 128×128, faster than training consumes them, so every batch is a brand-new world and the
+model can't memorize anything. Having exact ground truth also means every change can be measured.
+
+**2. Latent space** (`miniatlas/autoencoder.py`). A small conv autoencoder compresses each 128×128 RGB-D view into a
+32×32×8 latent (~34 dB PSNR). Diffusion runs on latents, so the 128 px model has the same token count as my first
+64 px pixel-space model.
+
+**3. Camera as geometry, not text** (`miniatlas/camera.py`). Every pixel gets its Plücker ray `(d, o × d)` as six
+extra channels. All rays are expressed in a gravity-aligned frame under the target camera (origin on the floor below
+it, z along its heading, y up): invariant to where you stand and which way you face, but height and pitch are kept.
+
+**4. Multi-view diffusion Transformer** (`miniatlas/model.py`, `miniatlas/flow.py`). The noisy target view and up to
+four context views go into one sequence with full attention. There is no frame-index embedding — the context is an
+unordered set whose only notion of position is the rays, which is what "spatial context" means here. Target views
+use fine patches (256 tokens), context views coarse ones (64 tokens each). adaLN-Zero, QK-norm, rectified flow,
+20-step Euler sampling, CFG 1.5. Context views get random noise during training (and the model is told how much),
+so it learns not to trust its own slightly-wrong outputs blindly.
+
+**5. Spatial memory** (`miniatlas/world.py`). Every observed or generated view is stored with its pose. To pick the
+context for a new camera, each stored frame's depth is lifted to 3D, projected into the new camera, and the four
+frames that cover the view best are used. Context is chosen by *where*, not *when*.
+
+**6. Explicit 3D cache** (`miniatlas/cache.py`). This was the change that mattered most. All real photos and the 12
+most relevant generated frames are unprojected with their depth and splatted into the new camera with a z-buffer.
+That gives a partial image of what is already known (RGB + depth + coverage mask, holes where nothing was seen),
+which is fed to the target tokens through a zero-initialized layer. Things that were already seen get carried over
+geometrically, and the model only has to fill the holes. Same idea as the 3D cache in GEN3C.
+
+<p align="center"><img src="assets/training_preview.png" width="760"><br>
+<sub>Training preview. Each row: 4 context views (grey = none) | 3D cache | target | generated | target depth |
+generated depth. Row 1 has no context at all, so it is pure imagination.</sub></p>
+
+## What I tried
+
+Evaluation (`rollout.py`): give the model 1 or 3 photos of an unseen room, then generate 103 frames autoregressively
+along a fixed path — spin 360° (24 frames), walk 40 steps, walk back (39 frames) — and compare with the real
+renders. The walk back matters most: by then dozens of frames are the model's own output, so any drift shows up.
+Numbers are PSNR in dB, averaged over 6 random rooms.
+
+| Version | Idea | 1 photo (spin / walk / back) | 3 photos (spin / walk / back) | Training |
+|---|---|---|---|---|
+| v1 pixels, 64 px | baseline | not on the same rooms | not on the same rooms | 1.5 h |
+| v2 latent, 128 px | autoencoder + latent diffusion | 15.6 / 16.2 / 13.8 | 16.8 / 17.4 / 14.9 | 0.5 h + 2.3 h |
+| v3 + self-forcing | train on its own outputs | 15.0 / 15.6 / 13.4 | 17.1 / 17.5 / 14.6 | +1 h |
+| **v4 + 3D cache** | reproject memory as geometry | 15.5 / 16.0 / **15.2** | **18.1 / 18.8 / 17.2** | +1 h |
+
+- **v1 → v2.** 64×64 was too blurry, and 128 px in pixel space would cost 4× the compute. Moving to latents kept the
+  token count the same and made edges (checkers, stripes, frames) much sharper.
+- **v2 → v3, didn't work.** My guess was that drift comes from training only on clean context while inference feeds
+  the model its own imperfect frames. So I replaced some context views with the model's own regenerations
+  (`miniatlas/selfforce.py`). PSNR stayed flat and the drift didn't improve
+  ([comparison](assets/selfforce_comparison.png)). The real problem was that the model only remembers the room
+  through a few 2D images and re-imagines everything at every step.
+- **v2 → v4, worked.** Making the memory explicitly 3D raised PSNR on the walk back by 1.4 dB (1 photo) and 2.3 dB
+  (3 photos), and most of the blobs that used to appear mid-rollout became the correct walls and objects again:
+
+<p align="center"><img src="assets/cache_comparison.png" width="900"><br>
+<sub>Odd rows: v2. Even rows: v4 (3D cache). Each pair is ground truth | generated, at frames 30 / 50 / 70 / 90 / 102.</sub></p>
+
+With only one photo most of the room has never been seen, so the model invents something plausible but different
+(a box becomes a painting), which PSNR counts as wrong. That's why the 1-photo numbers are lower and improve less.
+
+## Train from scratch
+
+All times are on an RTX 4060 Laptop (8 GB).
 
 ```bash
-.venv/Scripts/python make_demo.py --out assets/demo.mp4 --gif assets/demo.gif
-```
-
----
-
-## 从零训练
-
-所有时间均在 RTX 4060 Laptop (8GB) 上测得。
-
-```bash
-# 1. 自编码器：128×128 RGB+深度 → 32×32×8 潜变量（~30 分钟）
+# 1. autoencoder: 128×128 RGB-D -> 32×32×8 latents (~30 min)
 .venv/Scripts/python train_ae.py --out runs/ae128 --res 128 --steps 8000
 
-# 2. 潜空间世界模型（~2.3 小时）
+# 2. latent world model (~2.3 h)
 .venv/Scripts/python train.py --out runs/latent128 --ae runs/ae128/ae.pt --steps 30000
 
-# 3. 加入 3D 缓存微调（~1 小时）
+# 3. fine-tune with the 3D cache (~1 h)
 .venv/Scripts/python train.py --out runs/latent128_cache --ae runs/ae128/ae.pt \
     --init runs/latent128/latest.pt --cache_extra 4 --bs 16 --steps 15000 --lr 1e-4 --warmup 200
 ```
 
-训练每 1000 步保存一张预览图 `runs/<名字>/preview_XXXXXX.png`；中断后重新运行同一命令会从 `latest.pt` 续训。
-其他实验：64px 像素空间版本 `train.py --out runs/main --steps 30000`；self-forcing 版本的命令见 `train.py` 顶部。
+A preview image is written to `runs/<name>/preview_XXXXXX.png` every 1000 steps, and rerunning the same command
+resumes from `latest.pt`. The 64 px pixel-space model is `train.py --out runs/main --steps 30000`; the self-forcing
+command is at the top of `train.py`. To re-record the demo: `python make_demo.py --lang en`.
 
-在 Windows 上，`torch.compile` 需要 `triton-windows`（已写入 requirements）；没有它时加 `--no-compile`，速度约慢 3~4 倍。
+## Code
 
----
+| File | What it does | Concept |
+|---|---|---|
+| `miniatlas/scene.py` | random rooms, batched GPU ray caster, camera sampling for training | data, poses |
+| `miniatlas/camera.py` | camera conventions, Plücker rays, gravity-aligned frame, (un)projection | camera conditioning |
+| `miniatlas/autoencoder.py` | RGB-D ↔ 4× downsampled latents | latent diffusion |
+| `miniatlas/model.py` | multi-view DiT: adaLN-Zero, QK-norm, context noise level, 3D cache input | core architecture, spatial context |
+| `miniatlas/flow.py` | rectified-flow loss and Euler sampler with CFG | rectified flow |
+| `miniatlas/data.py` | builds training batches on the fly (context sampling, noise augmentation, cache) | training setup |
+| `miniatlas/cache.py` | unproject + z-buffer splat, pose/depth jitter for training | 3D cache |
+| `miniatlas/world.py` | spatial memory, retrieval, autoregressive generation, point-cloud fusion | inference, 3D output |
+| `miniatlas/selfforce.py` | training on the model's own regenerations (didn't help) | experiment |
+| `train_ae.py`, `train.py` | training scripts | |
+| `explore.py` | interactive exploration (pygame) | |
+| `rollout.py` | offline evaluation: spin → walk → walk back | evaluation |
+| `make_demo.py` | records the demo video | |
+| `viewer.html` | point-cloud viewer (three.js) | |
 
-## 代码结构
+## Differences from the real Atlas
 
-```
-miniatlas/
-  scene.py        程序化房间 + 批量 GPU 光线投射渲染 + 训练视角采样
-  camera.py       相机约定、Plücker 射线、重力对齐参考系、深度编码、投影 / 反投影
-  autoencoder.py  视图自编码器（RGB+深度 ↔ 4× 下采样潜变量）
-  model.py        多视角扩散 Transformer（adaLN-Zero、QK-norm、上下文噪声等级 / 生成标记 / 3D 缓存输入）
-  flow.py         rectified flow 损失与 Euler 采样器（CFG）
-  data.py         在线构造训练 batch（上下文采样、噪声增强、3D 缓存）
-  cache.py        3D 缓存：深度反投影 + z-buffer 溅射 + 训练时扰动
-  selfforce.py    self-forcing（实验性，未采用）
-  world.py        推理：空间记忆、检索、自回归生成、点云融合、PLY 导出
-train_ae.py       训练自编码器
-train.py          训练世界模型（像素空间 / 潜空间 / self-forcing / 3D 缓存）
-rollout.py        离线评测：转圈 → 行走 → 返回，与真值对比
-explore.py        交互式漫游（pygame）
-make_demo.py      录制演示视频
-viewer.html       浏览器点云查看器（three.js）
-```
+| | mini-world-model | Atlas |
+|---|---|---|
+| Scale | 128×128, 33M params, ~5 GPU-hours | up to 1440p, size not public |
+| Data | procedural rooms | real images, video, poses, depth |
+| Latent space | small autoencoder trained on the synthetic rooms | latent diffusion, details not public |
+| Camera encoding | Plücker rays (my assumption) | not public |
+| Memory | 4 retrieved views + a point-cloud 3D cache | spatial context, details not public |
+| Inference | full sequence recomputed every step | KV cache and other LLM serving tricks |
 
----
+## Things that bit me
 
-## 局限
+- **8 GB VRAM fills up quietly.** On Windows, when VRAM runs out the driver spills into shared system memory instead
+  of raising an OOM error, and training drops from ~5 it/s to almost nothing. The giveaway was GPU power falling from
+  ~90 W to ~35 W at "100% utilization". It happened twice (the first full run and the self-forcing run); a smaller
+  batch fixed it both times.
+- **`torch.compile` was worth it.** It needs `triton-windows` on Windows, but made the model ~4× and the ray caster
+  ~2.5× faster, which is what made training at 128 px feasible on a laptop.
+- **pygame and a Chinese input method.** SDL turns on text input by default, so the IME swallowed W/A/S/D and the
+  explorer looked frozen. `pygame.key.stop_text_input()` fixed it.
+- **Same noise, same hallucination.** The rollout script seeded each frame by its index, and in several rooms both
+  models produced the same dark-green blob at frame 70. In regions that memory doesn't cover, the content is decided
+  by the noise rather than by what was seen.
+- **More "realistic" training wasn't the fix.** Self-forcing made the training inputs look more like inference, but
+  that wasn't the bottleneck. Giving the model an explicit 3D memory was.
 
-这个项目首先是一次架构上的探索，生成效果不是目标，我也没法保证。设备只有一台笔记本，数据是自己生成的合成房间，
-训练时间加起来约 5 个 GPU 小时，在这个条件下能做到的就是演示里的样子。目前比较明显的问题有：
+## Limitations
 
-- 只在合成房间上训练过，处理不了真实照片。要往真实场景走，得换成带位姿的真实视频数据（RealEstate10K、DL3DV）
-  和更好的 VAE，算力也要再多一两个数量级。
-- 3D 缓存解决了"走着走着房间变样"的问题，但解决不了"第一次就画得不好"：没见过的区域如果一开始生成成了色块，
-  之后会一直保持那个样子。物体边缘也偏软。
-- 分辨率 128×128，每一步大约 0.35 秒，离流畅的实时交互还有距离。一致性蒸馏应该能把采样从 20 步压到 4 步左右，
-  之后有时间想试试。
-- 3D 缓存现在是直接把点溅射过去，比较粗糙，换成 3D 高斯应该会干净不少。
-- 评测只跑了 6 个随机房间，数字波动不小，表里的结论看个趋势就好。
+- Only trained on synthetic rooms; real photos don't work. Going there would need posed real video (RealEstate10K,
+  DL3DV), a much better VAE, and one or two orders of magnitude more compute.
+- The 3D cache keeps things consistent, not pretty: if an unseen area comes out as a blob the first time, it stays a
+  blob. Object edges are soft.
+- 128×128 and ~0.35 s per step is far from smooth real-time. Consistency distillation down to ~4 sampling steps
+  would be the next thing I'd try.
+- The cache is plain point splatting; 3D Gaussians would give cleaner reprojection and better 3D export.
+- Evaluation uses only 6 rooms and the numbers are noisy; read the table as a trend.
 
----
+## References
 
-## 参考
-
-- World Labs, *Atlas* (2026) — [发布推文](https://x.com/theworldlabs/status/2094839756329041984)，本项目的灵感来源（非官方实现）
+- World Labs, [*Atlas*](https://www.worldlabs.ai/blog/atlas) (2026) — the inspiration (this is not an official implementation)
 - Peebles & Xie, *Scalable Diffusion Models with Transformers (DiT)* — [arXiv:2212.09748](https://arxiv.org/abs/2212.09748)
 - Liu et al., *Flow Straight and Fast: Rectified Flow* — [arXiv:2209.03003](https://arxiv.org/abs/2209.03003)
 - Esser et al., *Scaling Rectified Flow Transformers for High-Resolution Image Synthesis (SD3)* — [arXiv:2403.03206](https://arxiv.org/abs/2403.03206)

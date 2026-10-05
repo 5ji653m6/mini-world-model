@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 530" width="1040" height="530" font-family="'Segoe UI','Helvetica Neue',Arial,'PingFang SC','Microsoft YaHei','Noto Sans CJK SC','Noto Sans SC',sans-serif">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrow-loop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#b45309"/>
+    </marker>
+    <style>
+      .t { font-size: 16px; font-weight: 700; fill: #0f172a; text-anchor: middle; }
+      .s { font-size: 13px; fill: #334155; text-anchor: middle; }
+      .xs { font-size: 12px; fill: #64748b; text-anchor: middle; }
+      .lbl { font-size: 13px; fill: #475569; text-anchor: middle; }
+      .edge { stroke: #475569; stroke-width: 1.8; fill: none; }
+    </style>
+  </defs>
+
+  <!-- card background so the figure reads well in both light and dark mode -->
+  <rect x="1" y="1" width="1038" height="528" rx="16" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
+
+  <!-- spatial memory -->
+  <rect x="30" y="60" width="190" height="300" rx="12" fill="#fef9e7" stroke="#d4a72c" stroke-width="1.6"/>
+  <text class="t" x="125" y="92">Spatial memory</text>
+  <rect x="74" y="118" width="110" height="66" rx="6" fill="#ffffff" stroke="#d4a72c"/>
+  <rect x="66" y="126" width="110" height="66" rx="6" fill="#ffffff" stroke="#d4a72c"/>
+  <rect x="58" y="134" width="110" height="66" rx="6" fill="#ffffff" stroke="#d4a72c"/>
+  <text class="s" x="113" y="162">RGB + depth</text>
+  <text class="s" x="113" y="182">+ camera pose</text>
+  <text class="s" x="125" y="240">real photos</text>
+  <text class="s" x="125" y="262">+ every generated frame</text>
+  <text class="xs" x="125" y="300">organized by 3D position,</text>
+  <text class="xs" x="125" y="318">not by time</text>
+
+  <!-- context views -->
+  <rect x="330" y="60" width="250" height="100" rx="12" fill="#e0f2fe" stroke="#0284c7" stroke-width="1.6"/>
+  <text class="t" x="455" y="92">Context views × 4</text>
+  <text class="s" x="455" y="117">retrieved by frustum overlap</text>
+  <text class="s" x="455" y="139">latents + Plücker rays</text>
+
+  <!-- target camera pose -->
+  <rect x="370" y="185" width="170" height="50" rx="25" fill="#ffedd5" stroke="#ea580c" stroke-width="1.6"/>
+  <text class="t" x="455" y="207" style="font-size:15px">Target camera pose</text>
+  <text class="xs" x="455" y="226">WASD / arrow keys</text>
+
+  <!-- 3D cache -->
+  <rect x="330" y="260" width="250" height="100" rx="12" fill="#dcfce7" stroke="#16a34a" stroke-width="1.6"/>
+  <text class="t" x="455" y="292">3D cache</text>
+  <text class="s" x="455" y="317">unproject → z-buffer splat</text>
+  <text class="s" x="455" y="339">known part: RGB / depth / mask</text>
+
+  <!-- transformer -->
+  <rect x="650" y="60" width="220" height="300" rx="12" fill="#ede9fe" stroke="#7c3aed" stroke-width="1.6"/>
+  <text class="t" x="760" y="168" style="font-size:17px">Multi-view diffusion</text>
+  <text class="t" x="760" y="192" style="font-size:17px">Transformer</text>
+  <text class="s" x="760" y="232">33M params · latent space</text>
+  <text class="s" x="760" y="254">rectified flow · 20 steps</text>
+  <text class="s" x="760" y="276">fills holes, fixes artifacts</text>
+
+  <!-- decode + output -->
+  <rect x="670" y="390" width="180" height="40" rx="10" fill="#f1f5f9" stroke="#64748b" stroke-width="1.4"/>
+  <text class="s" x="760" y="415" style="font-size:14px; fill:#0f172a">Autoencoder decode</text>
+  <rect x="650" y="452" width="220" height="52" rx="12" fill="#fce7f3" stroke="#db2777" stroke-width="1.6"/>
+  <text class="t" x="760" y="475" style="font-size:15px">New view: RGB + depth</text>
+  <text class="xs" x="760" y="494">128 × 128</text>
+
+  <!-- point cloud -->
+  <rect x="900" y="452" width="115" height="52" rx="12" fill="#ccfbf1" stroke="#0d9488" stroke-width="1.6"/>
+  <text class="t" x="957" y="475" style="font-size:14px">Point cloud</text>
+  <text class="xs" x="957" y="494">fused, .ply</text>
+
+  <!-- edges: memory -> context / cache -->
+  <path class="edge" d="M220,110 L326,110" marker-end="url(#arrow)"/>
+  <text class="lbl" x="273" y="101">① retrieve</text>
+  <path class="edge" d="M220,310 L326,310" marker-end="url(#arrow)"/>
+  <text class="lbl" x="273" y="301">② reproject</text>
+
+  <!-- pose -> context / cache / transformer -->
+  <path class="edge" d="M455,185 L455,164" marker-end="url(#arrow)"/>
+  <path class="edge" d="M455,235 L455,256" marker-end="url(#arrow)"/>
+  <path class="edge" d="M540,210 L646,210" marker-end="url(#arrow)"/>
+
+  <!-- context / cache -> transformer -->
+  <path class="edge" d="M580,110 L646,110" marker-end="url(#arrow)"/>
+  <path class="edge" d="M580,310 L646,310" marker-end="url(#arrow)"/>
+
+  <!-- transformer -> decode -> output -> point cloud -->
+  <path class="edge" d="M760,360 L760,386" marker-end="url(#arrow)"/>
+  <text class="xs" x="815" y="378" style="text-anchor:start">latent</text>
+  <path class="edge" d="M760,430 L760,448" marker-end="url(#arrow)"/>
+  <path class="edge" d="M870,478 L896,478" marker-end="url(#arrow)"/>
+
+  <!-- autoregressive loop back into memory -->
+  <path d="M650,478 L125,478 L125,364" fill="none" stroke="#b45309" stroke-width="2" stroke-dasharray="7 5" marker-end="url(#arrow-loop)"/>
+  <text x="390" y="468" style="font-size:13px; fill:#b45309; text-anchor:middle; font-weight:700">write back to memory → next step (autoregressive loop)</text>
+
+  <!-- title -->
+  <text x="30" y="38" style="font-size:15px; fill:#64748b; font-weight:700">Every step:</text>
+  <text x="120" y="38" style="font-size:15px; fill:#64748b">retrieve + reproject memory → generate the new view → write it back</text>
+</svg>
