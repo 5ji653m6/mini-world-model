@@ -64,22 +64,7 @@ Atlas 的参数量、数据和训练细节都没有公开，计算量也远超�
 
 ## 方法
 
-```mermaid
-flowchart TB
-    subgraph Memory["空间记忆"]
-        M["已观察 / 已生成的帧<br/>(RGB + 深度 + 相机位姿)"]
-    end
-    T(["新的相机位姿<br/>(WASD 控制)"])
-    M -- "按视锥重叠检索 4 帧" --> C["上下文视图<br/>(潜变量 + Plücker 射线)"]
-    M -- "深度反投影 + z-buffer 溅射" --> K["3D 缓存<br/>(已知部分的 RGB / 深度 / 掩码)"]
-    T --> C
-    T --> K
-    C --> D["多视角扩散 Transformer<br/>33M 参数 · rectified flow"]
-    K --> D
-    D --> Z["目标视角潜变量"] --> AE["自编码器解码"] --> O["RGB + 深度"]
-    O -- "写回记忆" --> M
-    O --> P["融合 3D 点云 (.ply)"]
-```
+<p align="center"><img src="assets/pipeline.svg" width="900" alt="方法流程图"></p>
 
 ### 1. 数据：程序化房间 + GPU 光线投射（`miniatlas/scene.py`）
 
