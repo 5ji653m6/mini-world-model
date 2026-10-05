@@ -1,0 +1,8 @@
+# PyTorch with CUDA: install first from the PyTorch index, e.g.
+#   pip install torch --index-url https://download.pytorch.org/whl/cu126
+torch>=2.4
+numpy
+pillow
+pygame-ce
+imageio[ffmpeg]
+triton-windows; sys_platform == "win32"

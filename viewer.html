@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mini-Atlas 点云查看器</title>
+<style>
+  :root { --bg: #15161a; --fg: #e6e6e6; --muted: #9a9aa3; --accent: #ffd23c; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg);
+    font: 14px/1.4 system-ui, "Microsoft YaHei", sans-serif; overflow: hidden; }
+  #hud { position: fixed; top: 12px; left: 12px; right: 12px; display: flex; gap: 12px;
+    align-items: center; flex-wrap: wrap; pointer-events: none; }
+  #hud > * { pointer-events: auto; }
+  label.btn { background: #2a2b33; border: 1px solid #3a3b45; padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+  label.btn:hover { border-color: var(--accent); }
+  #info { color: var(--muted); }
+  #drop { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+    color: var(--muted); font-size: 18px; text-align: center; pointer-events: none; }
+  input[type=range] { width: 110px; }
+</style>
+</head>
+<body>
+<div id="hud">
+  <label class="btn">打开 .ply<input id="file" type="file" accept=".ply" multiple hidden></label>
+  <span>点大小 <input id="size" type="range" min="1" max="12" value="4"></span>
+  <label class="btn" id="ceil">隐藏天花板</label>
+  <span id="info"></span>
+</div>
+<div id="drop">把 rollout.py / explore.py 导出的 .ply 拖到这里<br>（可以同时拖 generated.ply 和 groundtruth.ply 对比）</div>
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+               "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+import { PLYLoader } from "three/addons/loaders/PLYLoader.js";
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(devicePixelRatio);
+renderer.setSize(innerWidth, innerHeight);
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15161a);
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.01, 200);
+camera.position.set(0, 9, 9);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1, 0);
+scene.add(new THREE.GridHelper(12, 12, 0x444455, 0x2a2a33));
+
+let clouds = [], hideCeil = false;
+const sizeEl = document.getElementById("size");
+const material = () => new THREE.PointsMaterial({ size: sizeEl.value * 0.01, vertexColors: true });
+
+function addCloud(name, buffer) {
+  const geom = new PLYLoader().parse(buffer);
+  geom.computeBoundingBox();
+  const full = geom.attributes.position.array.slice();
+  const fullCol = geom.attributes.color.array.slice();
+  const pts = new THREE.Points(geom, material());
+  pts.userData = { name, full, fullCol };
+  const offset = clouds.length * 13;          // side by side when several files are loaded
+  pts.position.x = offset;
+  scene.add(pts);
+  clouds.push(pts);
+  applyCeil();
+  document.getElementById("drop").style.display = "none";
+  document.getElementById("info").textContent =
+    clouds.map(c => `${c.userData.name}: ${(c.userData.full.length / 3).toLocaleString()} 点`).join("  |  ");
+  controls.target.set((clouds.length - 1) * 6.5, 1, 0);
+}
+
+function applyCeil() {
+  for (const c of clouds) {
+    const { full, fullCol } = c.userData;
+    const keep = [], col = [];
+    for (let i = 0; i < full.length; i += 3) {
+      if (hideCeil && full[i + 1] > 2.3) continue;
+      keep.push(full[i], full[i + 1], full[i + 2]);
+      col.push(fullCol[i], fullCol[i + 1], fullCol[i + 2]);
+    }
+    c.geometry.setAttribute("position", new THREE.Float32BufferAttribute(keep, 3));
+    c.geometry.setAttribute("color", new THREE.Float32BufferAttribute(col, 3));
+  }
+}
+
+async function load(files) {
+  for (const f of files) addCloud(f.name, await f.arrayBuffer());
+}
+document.getElementById("file").onchange = e => load(e.target.files);
+addEventListener("dragover", e => e.preventDefault());
+addEventListener("drop", e => { e.preventDefault(); load(e.dataTransfer.files); });
+sizeEl.oninput = () => clouds.forEach(c => c.material.size = sizeEl.value * 0.01);
+document.getElementById("ceil").onclick = e => {
+  hideCeil = !hideCeil;
+  e.target.textContent = hideCeil ? "显示天花板" : "隐藏天花板";
+  applyCeil();
+};
+addEventListener("resize", () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
+</script>
+</body>
+</html>
