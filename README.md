@@ -99,35 +99,30 @@ geometrically, and the model only has to fill the holes. Same idea as the 3D cac
 <sub>Training preview. Each row: 4 context views (grey = none) | 3D cache | target | generated | target depth |
 generated depth. Row 1 has no context at all, so it is pure imagination.</sub></p>
 
-## What I tried
+## Results
 
-Evaluation (`rollout.py`): give the model 1 or 3 photos of an unseen room, then generate 103 frames autoregressively
-along a fixed path — spin 360° (24 frames), walk 40 steps, walk back (39 frames) — and compare with the real
-renders. The walk back matters most: by then dozens of frames are the model's own output, so any drift shows up.
-Numbers are PSNR in dB, averaged over 6 random rooms.
-
-| Version | Idea | 1 photo (spin / walk / back) | 3 photos (spin / walk / back) | Training |
-|---|---|---|---|---|
-| v1 pixels, 64 px | baseline | not on the same rooms | not on the same rooms | 1.5 h |
-| v2 latent, 128 px | autoencoder + latent diffusion | 15.6 / 16.2 / 13.8 | 16.8 / 17.4 / 14.9 | 0.5 h + 2.3 h |
-| v3 + self-forcing | train on its own outputs | 15.0 / 15.6 / 13.4 | 17.1 / 17.5 / 14.6 | +1 h |
-| **v4 + 3D cache** | reproject memory as geometry | 15.5 / 16.0 / **15.2** | **18.1 / 18.8 / 17.2** | +1 h |
-
-- **v1 → v2.** 64×64 was too blurry, and 128 px in pixel space would cost 4× the compute. Moving to latents kept the
-  token count the same and made edges (checkers, stripes, frames) much sharper.
-- **v2 → v3, didn't work.** My guess was that drift comes from training only on clean context while inference feeds
-  the model its own imperfect frames. So I replaced some context views with the model's own regenerations
-  (`miniatlas/selfforce.py`). PSNR stayed flat and the drift didn't improve
-  ([comparison](assets/selfforce_comparison.png)). The real problem was that the model only remembers the room
-  through a few 2D images and re-imagines everything at every step.
-- **v2 → v4, worked.** Making the memory explicitly 3D raised PSNR on the walk back by 1.4 dB (1 photo) and 2.3 dB
-  (3 photos), and most of the blobs that used to appear mid-rollout became the correct walls and objects again:
+The test: give the model 1 or 3 photos of a room it has never seen, then let it generate 103 frames on its own
+along a fixed path — spin 360°, walk 40 steps, walk back — and compare every frame with the real render.
+By the walk back, dozens of frames in memory are the model's own output, so this is where drift shows.
 
 <p align="center"><img src="assets/cache_comparison.png" width="900"><br>
-<sub>Odd rows: v2. Even rows: v4 (3D cache). Each pair is ground truth | generated, at frames 30 / 50 / 70 / 90 / 102.</sub></p>
+<sub>Same rooms, same path. Odd rows: v2 (spatial memory only). Even rows: v4 (with the 3D cache).
+Each pair is ground truth | generated, at frames 30 / 50 / 70 / 90 / 102.</sub></p>
 
-With only one photo most of the room has never been seen, so the model invents something plausible but different
-(a box becomes a painting), which PSNR counts as wrong. That's why the 1-photo numbers are lower and improve less.
+<p align="center"><img src="assets/rollout_psnr.png" width="900"></p>
+
+<p align="center"><img src="assets/phase_psnr.png" width="900"><br>
+<sub>v2: 128 px latent model with spatial memory. v3: v2 fine-tuned on its own regenerated frames (self-forcing).
+v4: v2 fine-tuned with the 3D cache. Self-forcing didn't help; the 3D cache mostly pays off on the walk back,
+where the model returns to places it has already generated.</sub></p>
+
+With a single photo most of the room has never been seen, so the model invents something plausible but different
+(a box becomes a painting) and PSNR counts that as an error — the 1-photo numbers are lower for that reason.
+
+<p align="center"><img src="assets/training_curves.png" width="900"><br>
+<sub>Left: the autoencoder reaches ~34 dB reconstruction PSNR in 8k steps. Right: world-model loss; the two
+fine-tunes start from the v2 checkpoint at step 30k (their losses aren't directly comparable — v3 sees harder
+context, v4 gets extra input).</sub></p>
 
 ## Train from scratch
 
@@ -149,25 +144,6 @@ A preview image is written to `runs/<name>/preview_XXXXXX.png` every 1000 steps,
 resumes from `latest.pt`. The 64 px pixel-space model is `train.py --out runs/main --steps 30000`; the self-forcing
 command is at the top of `train.py`. To re-record the demo: `python make_demo.py --lang en`.
 
-## Code
-
-| File | What it does | Concept |
-|---|---|---|
-| `miniatlas/scene.py` | random rooms, batched GPU ray caster, camera sampling for training | data, poses |
-| `miniatlas/camera.py` | camera conventions, Plücker rays, gravity-aligned frame, (un)projection | camera conditioning |
-| `miniatlas/autoencoder.py` | RGB-D ↔ 4× downsampled latents | latent diffusion |
-| `miniatlas/model.py` | multi-view DiT: adaLN-Zero, QK-norm, context noise level, 3D cache input | core architecture, spatial context |
-| `miniatlas/flow.py` | rectified-flow loss and Euler sampler with CFG | rectified flow |
-| `miniatlas/data.py` | builds training batches on the fly (context sampling, noise augmentation, cache) | training setup |
-| `miniatlas/cache.py` | unproject + z-buffer splat, pose/depth jitter for training | 3D cache |
-| `miniatlas/world.py` | spatial memory, retrieval, autoregressive generation, point-cloud fusion | inference, 3D output |
-| `miniatlas/selfforce.py` | training on the model's own regenerations (didn't help) | experiment |
-| `train_ae.py`, `train.py` | training scripts | |
-| `explore.py` | interactive exploration (pygame) | |
-| `rollout.py` | offline evaluation: spin → walk → walk back | evaluation |
-| `make_demo.py` | records the demo video | |
-| `viewer.html` | point-cloud viewer (three.js) | |
-
 ## Differences from the real Atlas
 
 | | mini-world-model | Atlas |
@@ -178,22 +154,6 @@ command is at the top of `train.py`. To re-record the demo: `python make_demo.py
 | Camera encoding | Plücker rays (my assumption) | not public |
 | Memory | 4 retrieved views + a point-cloud 3D cache | spatial context, details not public |
 | Inference | full sequence recomputed every step | KV cache and other LLM serving tricks |
-
-## Things that bit me
-
-- **8 GB VRAM fills up quietly.** On Windows, when VRAM runs out the driver spills into shared system memory instead
-  of raising an OOM error, and training drops from ~5 it/s to almost nothing. The giveaway was GPU power falling from
-  ~90 W to ~35 W at "100% utilization". It happened twice (the first full run and the self-forcing run); a smaller
-  batch fixed it both times.
-- **`torch.compile` was worth it.** It needs `triton-windows` on Windows, but made the model ~4× and the ray caster
-  ~2.5× faster, which is what made training at 128 px feasible on a laptop.
-- **pygame and a Chinese input method.** SDL turns on text input by default, so the IME swallowed W/A/S/D and the
-  explorer looked frozen. `pygame.key.stop_text_input()` fixed it.
-- **Same noise, same hallucination.** The rollout script seeded each frame by its index, and in several rooms both
-  models produced the same dark-green blob at frame 70. In regions that memory doesn't cover, the content is decided
-  by the noise rather than by what was seen.
-- **More "realistic" training wasn't the fix.** Self-forcing made the training inputs look more like inference, but
-  that wasn't the bottleneck. Giving the model an explicit 3D memory was.
 
 ## Limitations
 

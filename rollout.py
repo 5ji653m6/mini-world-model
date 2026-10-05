@@ -10,6 +10,7 @@ Outputs (in --out):
     python rollout.py --ckpt runs/main/ema.pt --seed 3 --inputs 1
 """
 import argparse
+import json
 import math
 import os
 
@@ -117,6 +118,8 @@ def main():
                    duration=110, loop=0)
     save_ply(os.path.join(out, "generated.ply"), *mem.point_cloud())
     save_ply(os.path.join(out, "groundtruth.ply"), *gt_mem.point_cloud())
+    with open(os.path.join(out, "psnr.json"), "w") as f:   # per-frame PSNR, in trajectory order
+        json.dump([{"phase": ph, "psnr": v} for ph, vs in psnr.items() for v in vs], f)
     with open(os.path.join(out, "metrics.txt"), "w") as f:
         for ph, v in psnr.items():
             line = f"{ph:6s} PSNR {np.mean(v):.2f} dB over {len(v)} frames"
