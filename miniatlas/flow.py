@@ -22,6 +22,8 @@ def rf_sample(model, cond, shape, steps=25, cfg=1.0, generator=None):
     uncond = None
     if cfg != 1.0 and cond.get("ctx") is not None:
         uncond = dict(cond, ctx_mask=torch.zeros_like(cond["ctx_mask"]))
+        if "audio_mask" in cond:                       # audio off in the unconditional branch
+            uncond["audio_mask"] = torch.zeros_like(cond["audio_mask"])
     for i in range(steps):
         t = ts[i].expand(shape[0])
         v = model(x, t, **cond)

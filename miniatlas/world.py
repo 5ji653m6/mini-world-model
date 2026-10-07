@@ -25,7 +25,9 @@ def load_model(path, device="cuda"):
     ck = torch.load(path, map_location=device)
     model = MiniAtlas(**ck["config"]).to(device).eval()
     missing, unexpected = model.load_state_dict(ck["ema"], strict=False)
-    assert set(missing) <= {"gen_emb"} and not unexpected, (missing, unexpected)   # older checkpoints
+    # older checkpoints lack later additions (gen_emb, audio pathway)
+    assert set(missing) <= {"gen_emb", "pos_audio", "audio_emb",
+                            "embed_audio.weight", "embed_audio.bias"} and not unexpected
     model.ae = None
     if "ae" in ck:
         model.ae = AutoEncoder(**ck["ae_config"]).to(device).eval().requires_grad_(False)
@@ -126,9 +128,12 @@ def memory_cache(model, memory, c2w, n_gen=12):
 
 
 @torch.no_grad()
-def generate_view(model, memory, c2w, K=4, steps=25, cfg=1.0, tau_gen=0.05, seed=None):
+def generate_view(model, memory, c2w, K=4, steps=25, cfg=1.0, tau_gen=0.05, seed=None,
+                  scn=None):
     """Generate the view at camera c2w [4,4] conditioned on retrieved memory frames.
-    Returns the image-space view [4,H,W], its model-space version and the retrieved indices."""
+    Returns the image-space view [4,H,W], its model-space version and the retrieved indices.
+    With an audio-conditioned model and the ground-truth scene `scn`, the binaural echo
+    of a hypothetical footstep at c2w is synthesised and fed as conditioning."""
     dev, res, C = c2w.device, model.img, model.in_ch
     idx = memory.retrieve(c2w, K)
     ctx = torch.zeros(1, K, C, res, res, device=dev)
@@ -148,7 +153,20 @@ def generate_view(model, memory, c2w, K=4, steps=25, cfg=1.0, tau_gen=0.05, seed
     cond = build_cond(ctx, c2w[None], ctx_c2w, mask, tau, res, ctx_gen=gen)
     if getattr(model, "embed_cache", None) is not None:
         cond["cache"] = memory_cache(model, memory, c2w)
-    with torch.autocast("cuda", dtype=torch.bfloat16):
+    if getattr(model, "embed_audio", None) is not None:
+        from .audio import synth_echo
+        from .audioenc import AudioEncoder
+        if not hasattr(model, "_audio_enc"):
+            model._audio_enc = AudioEncoder(dim=model.config["dim"])
+        wav = synth_echo(scn, c2w[None, None], dur=0.5) if scn is not None else None
+        if wav is not None:
+            cond["audio"] = model._audio_enc(wav[:, 0])
+        else:                                          # no scene: empty audio tokens
+            cond["audio"] = torch.zeros(1, model.config["audio_tokens"],
+                                        model.config["audio_dim"], device=dev)
+        cond["audio_mask"] = torch.ones(1, dtype=torch.bool, device=dev)
+    dev_type = "cuda" if dev == "cuda" or (isinstance(dev, torch.device) and dev.type == "cuda") else "cpu"
+    with torch.autocast(dev_type, dtype=torch.bfloat16, enabled=(dev_type == "cuda")):
         z = rf_sample(model, cond, (1, C, res, res), steps=steps, cfg=cfg if idx else 1.0, generator=g)[0]
     if model.ae is None:
         z = z.clamp(-1, 1)

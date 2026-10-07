@@ -6,3 +6,27 @@ outputs/
 release/
 *.pt
 *.ply
+
+# generated datasets & media
+walker_v2_dataset/
+spatial_audio_dataset/
+spatial_audio_walker/improved_dataset/
+spatial_audio_walker/spatial_audio_dataset/
+miniatlas_walk_frames/
+*_frames/
+*.mp4
+*.wav
+!assets/footsteps/*.wav
+*.zip
+assets/kenney_rpg-audio/
+audio_demo/
+synthesized_data/
+threejs-game-skills/
+threejs-spatial-walker/
+threejs-spatial-walker-standalone/
+ue_spatial_audio/
+unity_spatial_audio/
+long_walkthrough*
+walkthrough*
+test.html
+compare_*.png

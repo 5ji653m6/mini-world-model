@@ -69,10 +69,11 @@ class MiniAtlas(nn.Module):
     patches, which keeps the sequence short enough to train on a laptop GPU."""
 
     def __init__(self, img=64, patch=4, ctx_patch=8, dim=384, depth=12, heads=6, in_ch=4, ray_ch=6,
-                 cache_ch=0, cache_factor=1):
+                 cache_ch=0, cache_factor=1, audio_tokens=0, audio_dim=0):
         super().__init__()
         self.config = dict(img=img, patch=patch, ctx_patch=ctx_patch, dim=dim, depth=depth, heads=heads,
-                           in_ch=in_ch, ray_ch=ray_ch, cache_ch=cache_ch, cache_factor=cache_factor)
+                           in_ch=in_ch, ray_ch=ray_ch, cache_ch=cache_ch, cache_factor=cache_factor,
+                           audio_tokens=audio_tokens, audio_dim=audio_dim)
         self.img, self.patch, self.ctx_patch, self.in_ch = img, patch, ctx_patch, in_ch
         self.P = (img // patch) ** 2
         self.Pc = (img // ctx_patch) ** 2
@@ -89,6 +90,14 @@ class MiniAtlas(nn.Module):
             self.embed_cache = nn.Linear(cache_ch * self.cache_patch ** 2, dim)
             nn.init.zeros_(self.embed_cache.weight)
             nn.init.zeros_(self.embed_cache.bias)
+        # audio tokens: binaural echo patches from AudioEncoder. Zero-initialised so a
+        # pretrained visual model is exactly preserved when fine-tuning with audio.
+        if audio_tokens:
+            self.embed_audio = nn.Linear(audio_dim, dim)
+            self.pos_audio = nn.Parameter(torch.randn(1, audio_tokens, dim) * 0.02)
+            self.audio_emb = nn.Parameter(torch.zeros(dim))     # "this token is audio" marker
+            nn.init.zeros_(self.embed_audio.weight)
+            nn.init.zeros_(self.embed_audio.bias)
         nn.init.zeros_(self.tau_proj.weight)
         nn.init.zeros_(self.tau_proj.bias)
         self.blocks = nn.ModuleList([Block(dim, heads) for _ in range(depth)])
@@ -100,17 +109,25 @@ class MiniAtlas(nn.Module):
             nn.init.zeros_(m.bias)
 
     def forward(self, xt, t, tgt_ray, ctx=None, ctx_ray=None, ctx_mask=None, ctx_tau=None, ctx_gen=None,
-                cache=None):
+                cache=None, audio=None, audio_mask=None):
         """xt [B,C,H,W] noisy target, t [B], tgt_ray [B,6,H,W];
         ctx [B,K,C,H,W], ctx_ray [B,K,6,H,W], ctx_mask [B,K] bool, ctx_tau [B,K],
         ctx_gen [B,K] bool (view is the model's own output rather than an observation),
-        cache [B,5,H*f,W*f] memory reprojected into the target camera (see cache.py)."""
+        cache [B,5,H*f,W*f] memory reprojected into the target camera (see cache.py),
+        audio [B,Na,Da] binaural echo patches (see audioenc.py),
+        audio_mask [B] bool: per-sample audio dropout (masked tokens are excluded from
+        attention entirely, so the model is then EXACTLY the no-audio model)."""
         B, D, P, Pc = xt.shape[0], self.pos.shape[-1], self.P, self.Pc
         x = self.embed(patchify(torch.cat([xt, tgt_ray], 1)[:, None], self.patch))[:, 0] + self.pos
         if cache is not None and hasattr(self, "embed_cache"):
             x = x + self.embed_cache(patchify(cache[:, None].to(x.dtype), self.cache_patch))[:, 0]
         c = self.t_emb(t)
         K = 0 if ctx is None else ctx.shape[1]
+        Na = 0
+        if audio is not None and hasattr(self, "embed_audio") and audio.shape[1] > 0:
+            tok_a = self.embed_audio(audio.to(x.dtype)) + self.pos_audio + self.audio_emb
+            Na = tok_a.shape[1]
+            x = torch.cat([x, tok_a], 1)
         mask = None
         if K:
             tok = self.embed_ctx(patchify(torch.cat([ctx, ctx_ray], 2), self.ctx_patch)) + self.pos_ctx
@@ -118,9 +135,15 @@ class MiniAtlas(nn.Module):
             if ctx_gen is not None:
                 tok = tok + ctx_gen.to(tok.dtype)[:, :, None, None] * self.gen_emb
             x = torch.cat([x, tok.reshape(B, K * Pc, D)], 1)
-            valid = torch.cat([torch.ones(B, P, dtype=torch.bool, device=xt.device),
-                               ctx_mask[:, :, None].expand(B, K, Pc).reshape(B, K * Pc)], 1)
-            mask = valid[:, None, None]
+        if K or Na:
+            valid = [torch.ones(B, P, dtype=torch.bool, device=xt.device)]
+            if Na:
+                if audio_mask is None:
+                    audio_mask = torch.ones(B, dtype=torch.bool, device=xt.device)
+                valid.append(audio_mask[:, None].expand(B, Na))
+            if K:
+                valid.append(ctx_mask[:, :, None].expand(B, K, Pc).reshape(B, K * Pc))
+            mask = torch.cat(valid, 1)[:, None, None]
         for blk in self.blocks:
             x = blk(x, c, mask)
         sh, sc = self.final_ada(F.silu(c))[:, None].chunk(2, -1)

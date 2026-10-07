@@ -54,8 +54,8 @@ DEFAULT_CKPTS = ["runs/latent128_cache/ema.pt", "runs/latent128/ema.pt", "runs/m
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--ckpt", default=next(p for p in DEFAULT_CKPTS if os.path.exists(p)),
-                    help="defaults to the best trained model available")
+    ap.add_argument("--ckpt", default=None,
+                    help="checkpoint path; defaults to the best trained model available")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--inputs", type=int, default=1, help="number of real photos given to the model")
     ap.add_argument("--K", type=int, default=4)
@@ -64,12 +64,13 @@ def main():
     ap.add_argument("--tau", type=float, default=0.05, help="noise level assigned to generated context frames")
     ap.add_argument("--walk", type=int, default=40)
     ap.add_argument("--out", default=None)
+    ap.add_argument("--device", default="cuda", help="cuda or cpu")
     args = ap.parse_args()
     out = args.out or f"outputs/rollout_seed{args.seed}_in{args.inputs}"
     os.makedirs(out, exist_ok=True)
-    dev = "cuda"
+    dev = args.device
 
-    model = load_model(args.ckpt, dev)
+    model = load_model(args.ckpt or next(p for p in DEFAULT_CKPTS if os.path.exists(p)), dev)
     torch.manual_seed(args.seed)
     scn = sample_scenes(1, dev)
     start = sample_positions(scn, 1)[0, 0]
@@ -97,7 +98,7 @@ def main():
     for i, (p, y, phase) in enumerate(traj):
         c2w = look_c2w(p, torch.tensor(y, device=dev), torch.tensor(0.0, device=dev))
         x, lat, idx = generate_view(model, mem, c2w, K=args.K, steps=args.steps, cfg=args.cfg,
-                                     tau_gen=args.tau, seed=i)
+                                     tau_gen=args.tau, seed=i, scn=scn)
         mem.add(x, c2w, lat)
         gt = gt_view(c2w)
         gt_mem.add(gt, c2w, None, real=True)

@@ -33,10 +33,11 @@ def to_img(x):
 
 
 @torch.no_grad()
-def preview(model, batch, path, steps=25, ae=None):
+def preview(model, batch, path, steps=25, ae=None, dev="cuda"):
     x0, cond = batch
-    with torch.autocast("cuda", dtype=torch.bfloat16):
-        pred = rf_sample(model, cond, x0.shape, steps=steps, generator=torch.Generator("cuda").manual_seed(0))
+    with torch.autocast(dev, dtype=torch.bfloat16, enabled=(dev == "cuda")):
+        gen = torch.Generator(dev).manual_seed(0) if dev == "cuda" else torch.Generator().manual_seed(0)
+        pred = rf_sample(model, cond, x0.shape, steps=steps, generator=gen)
     ctx = cond["ctx"]
     if ae is not None:                       # show decoded images, not latents
         x0, pred = ae.decode(x0), ae.decode(pred)
@@ -84,12 +85,16 @@ def main():
     ap.add_argument("--sf_rounds", type=int, default=2, help="self-forcing rounds (later rounds compound errors)")
     ap.add_argument("--cache_extra", type=int, default=-1,
                     help=">= 0 enables the 3D cache input, built from the context + this many history views")
+    ap.add_argument("--device", default="cuda", help="cuda or cpu")
+    ap.add_argument("--audio", action="store_true",
+                    help="condition on binaural footstep-echo tokens (echolocation); "
+                         "use with --init to fine-tune a visual baseline")
     args = ap.parse_args()
 
     os.makedirs(args.out, exist_ok=True)
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
-    dev = "cuda"
+    dev = args.device
 
     ae = None
     if args.ae:
@@ -101,8 +106,19 @@ def main():
         grid, in_ch = args.res, 4
         patch, ctx_patch = args.patch or 4, args.ctx_patch or 8
     cache_kw = dict(cache_ch=CACHE_CH, cache_factor=args.res // grid) if args.cache_extra >= 0 else {}
+    audio_enc = None
+    audio_kw = {}
+    if args.audio:
+        from miniatlas.audio import SR as AUDIO_SR
+        from miniatlas.audioenc import AudioEncoder
+        audio_enc = AudioEncoder(dim=args.dim)          # fixed buffers; no learned params
+        audio_enc = audio_enc.to(dev)
+        na = audio_enc.n_tokens(int(0.5 * AUDIO_SR))
+        audio_kw = dict(audio_tokens=na, audio_dim=audio_enc.patch_dim)
+        print(f"audio conditioning: {na} tokens x {audio_enc.patch_dim} dims")
     model = MiniAtlas(img=grid, patch=patch, ctx_patch=ctx_patch, in_ch=in_ch,
-                      dim=args.dim, depth=args.depth, heads=args.heads, **cache_kw).to(dev)
+                      dim=args.dim, depth=args.depth, heads=args.heads, **cache_kw,
+                      **audio_kw).to(dev)
     ema = copy.deepcopy(model).eval().requires_grad_(False)
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, betas=(0.9, 0.99), weight_decay=0.01)
     print(f"params: {sum(p.numel() for p in model.parameters()) / 1e6:.1f}M")
@@ -120,12 +136,16 @@ def main():
         ck = torch.load(args.init, map_location=dev)
         for m, key in ((model, "model"), (ema, "ema")):
             missing, unexpected = m.load_state_dict(ck[key], strict=False)
-            assert set(missing) <= {"gen_emb", "embed_cache.weight", "embed_cache.bias"} and not unexpected,                 (missing, unexpected)
+            assert set(missing) <= {"gen_emb", "embed_cache.weight", "embed_cache.bias",
+                                    "pos_audio", "audio_emb",
+                                    "embed_audio.weight", "embed_audio.bias"} and not unexpected, \
+                (missing, unexpected)
         print(f"initialised from {args.init} (step {ck['step']})")
 
-    with torch.random.fork_rng(devices=[0]):
+    with torch.random.fork_rng(devices=[0] if dev == "cuda" else []):
         torch.manual_seed(1234)
-        x0, cond = make_batch(8, args.K, args.res, dev, max_tau=0.0, ae=ae, cache_extra=args.cache_extra)
+        x0, cond = make_batch(8, args.K, args.res, dev, max_tau=0.0, ae=ae,
+                              cache_extra=args.cache_extra, audio_enc=audio_enc)
         n = torch.tensor([0, 1, 1, 2, 2, 3, 4, 4], device=dev)
         cond["ctx_mask"] = torch.arange(args.K, device=dev)[None] < n[:, None]
         fixed = (x0, cond)
@@ -149,12 +169,13 @@ def main():
             g["lr"] = lr_at(step)
         if args.self_force:
             x0, cond, extra = make_batch(args.bs, args.K, args.res, dev, ae=ae, return_extra=True,
-                                         cache_extra=args.cache_extra)
+                                         cache_extra=args.cache_extra, audio_enc=audio_enc)
             for _ in range(args.sf_rounds):
                 cond = self_force(train_model, cond, extra, R=args.self_force, steps=args.sf_steps)
         else:
-            x0, cond = make_batch(args.bs, args.K, args.res, dev, ae=ae, cache_extra=args.cache_extra)
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+            x0, cond = make_batch(args.bs, args.K, args.res, dev, ae=ae,
+                                  cache_extra=args.cache_extra, audio_enc=audio_enc)
+        with torch.autocast(dev, dtype=torch.bfloat16, enabled=(dev == "cuda")):
             per_ch = rf_loss(train_model, x0, cond)
         # pixel space: RGB and depth weighted equally; latent space: plain mean
         loss = per_ch.mean() if ae is not None else per_ch[:3].mean() + per_ch[3]
@@ -176,7 +197,7 @@ def main():
                   f"| lr {lr_at(step):.2e} | {50 / dt:.2f} it/s", flush=True)
             t0, acc = time.time(), [0.0, 0.0]
         if step % args.every == 0 or step == args.steps:
-            preview(ema, fixed, os.path.join(args.out, f"preview_{step:06d}.png"), ae=ae)
+            preview(ema, fixed, os.path.join(args.out, f"preview_{step:06d}.png"), ae=ae, dev=dev)
             ck = dict(model=model.state_dict(), ema=ema.state_dict(), opt=opt.state_dict(),
                       step=step, config=model.config)
             torch.save(ck, ckpt_path + ".tmp")

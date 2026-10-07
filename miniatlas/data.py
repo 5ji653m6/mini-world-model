@@ -1,12 +1,18 @@
 """On-the-fly training batches: render scenes, encode views, build conditioning."""
 import torch
 
+from .audio import synth_echo
+from .audioenc import AudioEncoder
 from .cache import build_cache, jitter_sources
 from .camera import enc_depth, plucker, ref_frame
 from .scene import render, sample_history_views, sample_scenes, sample_train_views
 
 # probability of 0..K context views (0 = imagine a view of a brand-new room)
 P_NCTX = (0.08, 0.27, 0.2, 0.2, 0.25)
+
+# probability of dropping the audio conditioning per sample (the model must stay able
+# to work without audio; also provides the CFG unconditional branch)
+P_AUDIO_DROP = 0.25
 
 
 def encode_views(rgb, z):
@@ -25,11 +31,15 @@ def build_cond(ctx_x, c2w_tgt, c2w_ctx, ctx_mask, ctx_tau, res, ctx_gen=None):
 
 
 @torch.no_grad()
-def make_batch(B, K=4, res=64, device="cuda", max_tau=0.2, ae=None, return_extra=False, cache_extra=-1):
+def make_batch(B, K=4, res=64, device="cuda", max_tau=0.2, ae=None, return_extra=False,
+               cache_extra=-1, audio_enc=None, audio_dur=0.5):
     """Render B scenes at `res`; with an autoencoder the views are returned as latents.
     With return_extra, also returns poses and clean context views (needed for self-forcing).
     With cache_extra >= 0, cond["cache"] holds the 3D cache: the context views plus
-    `cache_extra` extra history views, reprojected into the target camera."""
+    `cache_extra` extra history views, reprojected into the target camera.
+    With audio_enc (an AudioEncoder), cond["audio"] holds binaural echo tokens of a
+    hypothetical footstep at the target camera, and cond["audio_mask"] drops the
+    conditioning per-sample with probability P_AUDIO_DROP."""
     scn = sample_scenes(B, device)
     tgt, ctx = sample_train_views(scn, K)
     cams = torch.cat([tgt[:, None], ctx], 1)
@@ -47,6 +57,10 @@ def make_batch(B, K=4, res=64, device="cuda", max_tau=0.2, ae=None, return_extra
     tt = tau[..., None, None, None]
     ctx_x = (1 - tt) * x[:, 1:] + tt * torch.randn_like(x[:, 1:])
     cond = build_cond(ctx_x, tgt, ctx, ctx_mask, tau, x.shape[-1])
+    if audio_enc is not None:
+        wav = synth_echo(scn, tgt[:, None], dur=audio_dur)        # [B,1,2,T]
+        cond["audio"] = audio_enc(wav[:, 0])                      # [B,Na,Da]
+        cond["audio_mask"] = torch.rand(B, device=device) >= P_AUDIO_DROP
     if cache_extra >= 0:
         # cache sources: the context views actually given + history views; sometimes no
         # history (early in a rollout) or no cache at all (imagining from nothing)
