@@ -134,8 +134,11 @@ def main():
         print(f"resumed from step {step}")
     elif args.init:
         ck = torch.load(args.init, map_location=dev)
-        for m, key in ((model, "model"), (ema, "ema")):
-            missing, unexpected = m.load_state_dict(ck[key], strict=False)
+        # release checkpoints carry only the EMA weights
+        src_model = ck["model"] if "model" in ck else ck["ema"]
+        src_ema = ck["ema"] if "ema" in ck else src_model
+        for m, key in ((model, src_model), (ema, src_ema)):
+            missing, unexpected = m.load_state_dict(key, strict=False)
             assert set(missing) <= {"gen_emb", "embed_cache.weight", "embed_cache.bias",
                                     "pos_audio", "audio_emb",
                                     "embed_audio.weight", "embed_audio.bias"} and not unexpected, \
@@ -204,7 +207,7 @@ def main():
             os.replace(ckpt_path + ".tmp", ckpt_path)
             light = dict(ema=ema.state_dict(), config=model.config, step=step, res=args.res)
             if ae_ck is not None:                # bundle the autoencoder so ema.pt is self-contained
-                light.update(ae=ae_ck["ae"], ae_config=ae_ck["config"])
+                light.update(ae=ae_ck["ae"], ae_config=ae_ck.get("ae_config", ae_ck.get("config")))
             torch.save(light, os.path.join(args.out, "ema.pt"))
             print(f"saved checkpoint at step {step}", flush=True)
 

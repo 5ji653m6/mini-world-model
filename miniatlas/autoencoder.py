@@ -73,19 +73,23 @@ class AutoEncoder(nn.Module):
     @torch.no_grad()
     def encode(self, x):
         """[N,4,H,W] in [-1,1] -> normalised latents [N,z,H/f,W/f] (float32)."""
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
             z = self.encoder(x)
         return (z.float() - self.shift) / self.scale
 
     @torch.no_grad()
     def decode(self, z):
-        with torch.autocast("cuda", dtype=torch.bfloat16):
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=torch.cuda.is_available()):
             x = self.decoder(z * self.scale + self.shift)
         return x.float().clamp(-1, 1)
 
 
 def load_ae(path, device="cuda"):
     ck = torch.load(path, map_location=device)
+    if "ae_config" in ck:                        # AE bundled inside a world-model checkpoint
+        ae = AutoEncoder(**ck["ae_config"]).to(device).eval().requires_grad_(False)
+        ae.load_state_dict(ck["ae"])
+        return ae
     ae = AutoEncoder(**ck["config"]).to(device).eval().requires_grad_(False)
     ae.load_state_dict(ck["ae"])
     return ae
